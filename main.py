@@ -11,12 +11,13 @@ from multiprocessing import Pool
 import multiprocessing
 import datetime
 import time
+from tqdm import tqdm
 
 countries = ["HR", "HU", "RO"]
 nodeAmount = {"HR" : 54573, "HU" : 47538, "RO" : 41773}
 edgeFileSuffix = "_edges.csv"
 genreFileSuffix = "_genres.json"
-defaultDataset = os.path.join("dataset", "deezer_clean_data")
+defaultDataset = os.path.join("dataset", "deezer_clean_data", "top_5000_edges_subset")
 metrics = ["common-friends", "total-friends", "friends-measure", "Jaccard's Coefficient"]
 output2File = False
 chunkSize = 10000
@@ -127,6 +128,33 @@ def readDataRS(directory, country, nodeLimit, testRatio = 0.05):
         graph[e[0]].append(e[1])
         graph[e[1]].append(e[0])
     return graph, genreDict2, test
+
+def readAndReindexDataRP(directory, country, testRatio = 0.05):
+    """
+    Reads the data, reindexes the nodes, randomly partitions it into 
+    train and test data, then returns them.
+    """
+    edges = pandas.read_csv(os.path.join(directory, country + edgeFileSuffix))
+    fJson = open(os.path.join(directory, country + genreFileSuffix))
+    genreDict = json.load(fJson)
+    fJson.close()
+    edgeList = [None] * edges.shape[0]
+    
+    uniqueNodes = list(set(edges['node_1'].values.tolist() + edges['node_2'].values.tolist()))
+    nodeMap = {uniqueNodes[i] : i for i in range(len(uniqueNodes))}
+    for i in range(edges.shape[0]):
+        # ensuring that for each e = (e1, e2), e1 < e2.
+        n1, n2 = edges["node_1"][i], edges["node_2"][i]
+        edgeList[i] = (min(nodeMap[n1], nodeMap[n2]), max(nodeMap[n1], nodeMap[n2]))
+        
+    random.shuffle(edgeList)
+    testAmount = int(testRatio * edges.shape[0])
+    test, train = edgeList[:testAmount], edgeList[testAmount:]
+    graph = {i : [] for i in range(len(edgeList))}
+    for e in train:
+        graph[e[0]].append(e[1])
+        graph[e[1]].append(e[0])
+    return graph, genreDict, test
 
 def getAdjMat(graph):
     '''Given a dictionary representing a graph, returns the adjacency matrix.
@@ -361,8 +389,8 @@ def findEdgesCheckpoint(graph, country, metrics = metrics, fillingRate = 0.001, 
         f.write("topEdges = " + str(topEdges))
         f.close()
     else:
-        for i in range(len(graph)):
-            for j in range(i + 1, len(graph)):
+        for i in tqdm(range(len(graph))):
+            for j in tqdm(range(i + 1, len(graph))):
                 if not j in graph[i]:
                     scores = {m : (getConnectionScore(graph, i, j, m), i, j) for m in metrics}
                     
@@ -394,12 +422,12 @@ def evaluate(suggested, test, args):
     print("Recovery rate:")
     print(result)
 
-def runBaselineMethods():
+def runBaselineMethods(readMethod):
     """Use this function to run baseline methods.
     """
     country = countries[2]
     fillingRate = 0.01
-    split = 36 # sys.argv[1]
+    split = 1 # sys.argv[1]
     '''
     graph = getSampleGraph(10)
     print(graph)
@@ -407,7 +435,7 @@ def runBaselineMethods():
     print(suggested)
     '''
     
-    graph, genreDict, test = readDataRP(defaultDataset, country)
+    graph, genreDict, test = readMethod(defaultDataset, country)
     suggested = findEdgesCheckpoint(graph, country = country, fillingRate = fillingRate, split = split)
     evaluate(suggested, test, {"Country" : country, "Filling rate" : fillingRate})
     
@@ -443,18 +471,22 @@ if __name__ == "__main__":
     print("")
     
     country = "RO"
-    nodeLimit = "5000"
+    subsetSize = "5000"
     
-    graph, genreDict, test = readDataRS(defaultDataset, country, int(nodeLimit))
+    """ # creates adjacency matrix
+    graph, genreDict, test = readAndReindexDataRP(defaultDataset, country)
     count = 0
     for n in graph:
         count += len(graph[n])
     print(count)
     A = getAdjMat(graph)
-    np.savetxt(country + nodeLimit + ".csv", A, delimiter = ",")
-    f = open(country + nodeLimit + "Test", "w")
+    np.savetxt(country + subsetSize + ".csv", A, delimiter = ",")
+    f = open(country + subsetSize + "Test", "w")
     f.write(str(test))
     f.close()
+    """
+
+    runBaselineMethods(readAndReindexDataRP)
     
     end = time.time()
     print("Run time = " + str((end - start) // 60) + " minutes")
